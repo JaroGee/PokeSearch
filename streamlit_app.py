@@ -495,6 +495,8 @@ def ensure_state() -> None:
         st.session_state["force_search_query"] = None
     if "clear_request" not in st.session_state:
         st.session_state["clear_request"] = False
+    if "results_version" not in st.session_state:
+        st.session_state["results_version"] = 0
 
 
 def _mark_enter_submit() -> None:
@@ -669,6 +671,130 @@ def inject_brand_favicons(base_path: Path | None = None, emoji: str = "⚡️") 
     if png180:
         tags.append({"rel": "apple-touch-icon", "sizes": "180x180", "href": png180})
     _inject_head_links(tags)
+
+
+def inject_autoscroll_js() -> None:
+    components.html(
+        """
+<script>
+(function() {
+  const MOBILE_MAX_WIDTH = 768;
+  const TOP_TAP_THRESHOLD = 48;
+  const ANCHOR_ID = "pokesearch-results-anchor";
+  const win = (window.parent && window.parent !== window) ? window.parent : window;
+  const doc = (win && win.document) ? win.document : document;
+  const globalStore = win || window;
+
+  const isMobileViewport = () => {
+    return typeof win !== "undefined" && win.innerWidth <= MOBILE_MAX_WIDTH;
+  };
+
+  const findAnchor = () => doc.getElementById(ANCHOR_ID);
+
+  const scrollToTop = () => {
+    if (typeof win === "undefined") return;
+    try {
+      win.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      win.scrollTo(0, 0);
+    }
+  };
+
+  const scrollResultsIntoView = () => {
+    const anchor = findAnchor();
+    if (!anchor || !isMobileViewport()) return;
+    const active = doc.activeElement;
+    if (active && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) {
+      active.blur();
+    }
+    try {
+      anchor.scrollIntoView({ behavior: "smooth", block: "start", inline: "nearest" });
+      return;
+    } catch (error) {
+      // ignore and fall through to manual scroll
+    }
+    const rect = anchor.getBoundingClientRect();
+    const currentOffset =
+      win.pageYOffset ||
+      (doc.documentElement ? doc.documentElement.scrollTop : 0) ||
+      0;
+    const targetY = Math.max(currentOffset + rect.top, 0);
+    try {
+      win.scrollTo({ top: targetY, behavior: "smooth" });
+    } catch (error) {
+      win.scrollTo(0, targetY);
+    }
+  };
+
+  const syncResultsVersion = () => {
+    const anchor = findAnchor();
+    if (!anchor) return;
+    const current = anchor.getAttribute("data-results-version") || "";
+    const hasResults = Number(current) > 0;
+    const last = globalStore.pokesearchLastResultsVersion;
+    if (isMobileViewport() && hasResults && current !== last) {
+      scrollResultsIntoView();
+    }
+    globalStore.pokesearchLastResultsVersion = current;
+  };
+
+  const setupResultsObserver = () => {
+    const anchor = findAnchor();
+    if (!anchor) return;
+    if (globalStore.pokesearchResultsObserver) {
+      globalStore.pokesearchResultsObserver.disconnect();
+    }
+    const Observer = (win && win.MutationObserver) ? win.MutationObserver : MutationObserver;
+    const observer = new Observer(syncResultsVersion);
+    observer.observe(anchor, { attributes: true, attributeFilter: ["data-results-version"] });
+    globalStore.pokesearchResultsObserver = observer;
+    globalStore.pokesearchResultsAnchor = anchor;
+    syncResultsVersion();
+  };
+
+  const installTopTapHandler = () => {
+    if (globalStore.pokesearchTopTapHandlerInstalled) return;
+    const handler = (event) => {
+      if (!isMobileViewport()) return;
+      const touch = event.changedTouches && event.changedTouches[0];
+      const clientY = touch ? touch.clientY : event.clientY;
+      if (typeof clientY !== "number") return;
+      if (clientY > TOP_TAP_THRESHOLD) return;
+      scrollToTop();
+    };
+    win.addEventListener("touchend", handler, { passive: true });
+    win.addEventListener("click", handler, true);
+    globalStore.pokesearchTopTapHandlerInstalled = true;
+  };
+
+  const bootstrap = () => {
+    setupResultsObserver();
+    installTopTapHandler();
+  };
+
+  if (document.readyState === "complete" || document.readyState === "interactive") {
+    bootstrap();
+  } else {
+    doc.addEventListener("DOMContentLoaded", bootstrap, { once: true });
+  }
+  if (!globalStore.pokesearchResultsInterval) {
+    globalStore.pokesearchResultsInterval = win.setInterval(() => {
+      const anchor = findAnchor();
+      if (anchor && anchor !== globalStore.pokesearchResultsAnchor) {
+        setupResultsObserver();
+      }
+    }, 1200);
+  }
+  if (!globalStore.pokesearchResizeHooked) {
+    win.addEventListener("resize", syncResultsVersion);
+    globalStore.pokesearchResizeHooked = true;
+  }
+})();
+</script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def _load_first_image_base64(paths: Sequence[Path]) -> tuple[str | None, str]:
@@ -1272,6 +1398,7 @@ def add_to_history(entry: Dict[str, object]) -> None:
     st.session_state.history.insert(0, entry)
     if len(st.session_state.history) > MAX_HISTORY:
         st.session_state.history = st.session_state.history[:MAX_HISTORY]
+    st.session_state["results_version"] = st.session_state.get("results_version", 0) + 1
 
 
 def render_section(section: Dict[str, object]) -> str:
@@ -1839,8 +1966,18 @@ def main() -> None:
                 shortcuts["@capture"] = CAPTURE_BUCKETS.get(capture_filter, ("", None))[0]
     results_container = right_col.container()
     with results_container:
+        anchor_placeholder = st.empty()
         gallery_placeholder = st.empty()
         history_container = st.container()
+
+    def _render_results_anchor() -> None:
+        anchor_placeholder.markdown(
+            f'<div id="pokesearch-results-anchor" data-results-version="{st.session_state.get("results_version", 0)}"></div>',
+            unsafe_allow_html=True,
+        )
+
+    _render_results_anchor()
+    inject_autoscroll_js()
 
     if st.session_state.get("enter_submit"):
         search_clicked = True
@@ -1892,6 +2029,8 @@ def main() -> None:
             st.rerun()
             return
         if len(matches) > 8:
+            st.session_state["results_version"] = st.session_state.get("results_version", 0) + 1
+            _render_results_anchor()
             gallery_placeholder.empty()
             with gallery_placeholder.container():
                 render_sprite_gallery(matches)
