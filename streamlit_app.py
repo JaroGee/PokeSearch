@@ -605,7 +605,20 @@ def _inject_head_links(tags: Sequence[Dict[str, str]]) -> None:
 <script>
 (function() {{
   const tags = {payload};
-  const doc = (window.parent && window.parent.document) || document;
+  const pickDoc = () => {{
+    const fallback = document;
+    const candidates = [() => window.parent && window.parent.document, () => window.top && window.top.document];
+    for (const getter of candidates) {{
+      try {{
+        const candidate = getter();
+        if (candidate && candidate.head) return candidate;
+      }} catch (error) {{
+        // ignore and keep trying
+      }}
+    }}
+    return fallback;
+  }};
+  const doc = pickDoc();
   const head = doc.head || doc.getElementsByTagName("head")[0];
   if (!head) {{
     return;
@@ -632,6 +645,7 @@ def _inject_head_links(tags: Sequence[Dict[str, str]]) -> None:
 
 def _build_static_favicon_tags(base_path: Path | None = None) -> List[Dict[str, str]]:
     tags: List[Dict[str, str]] = []
+    primary_href: str | None = None
     for rel, mime, sizes, filename in FAVICON_FILES:
         path = resolve_asset_path(filename, base_path)
         if not path:
@@ -647,6 +661,10 @@ def _build_static_favicon_tags(base_path: Path | None = None) -> List[Dict[str, 
         if rel == "mask-icon":
             tag["color"] = FAVICON_MASK_COLOR
         tags.append(tag)
+        if not primary_href:
+            primary_href = href
+    if primary_href:
+        tags.append({"rel": "shortcut icon", "href": primary_href})
     return tags
 
 
@@ -812,10 +830,17 @@ def _load_first_image_base64(paths: Sequence[Path]) -> tuple[str | None, str]:
 
 def set_page_metadata() -> Dict[str, str]:
     base_path = Path(__file__).parent
+    icon_image = None
+    icon_path = resolve_asset_path("favicon-32x32.png", base_path)
+    if icon_path and Image:
+        try:
+            icon_image = Image.open(icon_path)
+        except Exception:
+            icon_image = None
 
     st.set_page_config(
         page_title="PokéSearch",
-        page_icon="⚡️",
+        page_icon=icon_image or "⚡️",
         layout="wide",
         initial_sidebar_state="collapsed",
     )
