@@ -1770,11 +1770,17 @@ def main() -> None:
         logo_b64 = load_file_as_base64(logo_path) if logo_path else None
         if logo_b64:
             st.markdown(
-                f'<div class="logo-wrapper"><img src="data:image/png;base64,{logo_b64}" alt="Pokémon logo" /></div>',
+                f'<div class="logo-wrapper"><img src="data:image/png;base64,{logo_b64}" alt="PokéSearch logo" /></div>',
                 unsafe_allow_html=True,
             )
         elif logo_path:
-            st.image(str(logo_path), use_container_width=True)
+            try:
+                st.image(str(logo_path), use_container_width=True)
+            except Exception:
+                st.markdown(
+                    '<div class="logo-wrapper"><h1>PokéSearch!</h1></div>',
+                    unsafe_allow_html=True,
+                )
         else:
             st.markdown(
                 '<div class="logo-wrapper"><h1>PokéSearch!</h1></div>',
