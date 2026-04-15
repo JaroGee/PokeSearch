@@ -497,6 +497,12 @@ def ensure_state() -> None:
         st.session_state["clear_request"] = False
     if "results_version" not in st.session_state:
         st.session_state["results_version"] = 0
+    if "mystery_pick_id" not in st.session_state:
+        st.session_state["mystery_pick_id"] = None
+    if "mystery_pick_name" not in st.session_state:
+        st.session_state["mystery_pick_name"] = ""
+    if "mystery_revealed" not in st.session_state:
+        st.session_state["mystery_revealed"] = False
 
 
 def _mark_enter_submit() -> None:
@@ -1177,6 +1183,56 @@ def set_page_metadata() -> Dict[str, str]:
       .search-panel .button-row .stButton>button {{
         min-width: 110px;
       }}
+      .mystery-card {{
+        margin-top: 1rem;
+        padding: 1rem 1.1rem;
+        border-radius: 22px;
+        background: linear-gradient(135deg, rgba(255, 0, 0, 0.08), rgba(255, 222, 0, 0.18));
+        border: 1px solid rgba(59, 76, 202, 0.18);
+      }}
+      .mystery-title {{
+        font-size: 0.84rem;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: rgba(0,0,0,0.55);
+        font-weight: 700;
+        margin-bottom: 0.75rem;
+      }}
+      .mystery-layout {{
+        display: grid;
+        grid-template-columns: 92px 1fr;
+        gap: 0.9rem;
+        align-items: center;
+      }}
+      .mystery-sprite {{
+        width: 92px;
+        height: 92px;
+        object-fit: contain;
+        image-rendering: pixelated;
+      }}
+      .mystery-silhouette {{
+        filter: brightness(0) saturate(0) drop-shadow(0 4px 10px rgba(0,0,0,0.15));
+      }}
+      .mystery-name {{
+        font-size: 1.15rem;
+        font-weight: 800;
+        color: var(--poke-blue);
+      }}
+      .mystery-hints {{
+        margin: 0.45rem 0 0;
+        padding-left: 1.1rem;
+        font-size: 0.88rem;
+      }}
+      .mystery-answer {{
+        margin-top: 0.6rem;
+        display: inline-block;
+        padding: 0.3rem 0.7rem;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.88);
+        border: 1px solid rgba(0,0,0,0.12);
+        font-size: 0.82rem;
+        font-weight: 600;
+      }}
       div[aria-live="polite"],
       div[role="status"] {{
         display: none !important;
@@ -1424,6 +1480,88 @@ def add_to_history(entry: Dict[str, object]) -> None:
     if len(st.session_state.history) > MAX_HISTORY:
         st.session_state.history = st.session_state.history[:MAX_HISTORY]
     st.session_state["results_version"] = st.session_state.get("results_version", 0) + 1
+
+
+def _choose_mystery_pick(species_index: Sequence[Dict[str, object]]) -> Dict[str, object] | None:
+    pool = [entry for entry in species_index if int(entry.get("id", 0)) > 0 and entry.get("name")]
+    if not pool:
+        return None
+    choice = random.choice(pool)
+    st.session_state["mystery_pick_id"] = int(choice.get("id", 0))
+    st.session_state["mystery_pick_name"] = str(choice.get("name", ""))
+    st.session_state["mystery_revealed"] = False
+    return choice
+
+
+def _current_mystery_pick(species_index: Sequence[Dict[str, object]]) -> Dict[str, object] | None:
+    current_id = st.session_state.get("mystery_pick_id")
+    current_name = str(st.session_state.get("mystery_pick_name") or "")
+    for entry in species_index:
+        if current_id and int(entry.get("id", 0)) == int(current_id):
+            return entry
+        if current_name and str(entry.get("name", "")) == current_name:
+            return entry
+    return _choose_mystery_pick(species_index)
+
+
+def render_whos_that_pokemon(species_index: Sequence[Dict[str, object]]) -> None:
+    mystery = _current_mystery_pick(species_index)
+    if not mystery:
+        return
+
+    name = str(mystery.get("name", "")).title()
+    pid = int(mystery.get("id", 0))
+    sprite_url = _pokemon_icon_url(name, pid if pid else None)
+    is_revealed = bool(st.session_state.get("mystery_revealed"))
+    hint_name = str(mystery.get("name", ""))
+    masked = " ".join("?" if ch.isalpha() else ch for ch in hint_name.title())
+    heading = name if is_revealed else masked
+    silhouette_class = "" if is_revealed else " mystery-silhouette"
+    hint_lines = [
+        f"Dex number: #{pid:03d}" if pid else "Dex number: ???",
+        f"Name length: {len(hint_name.replace('-', '').replace(' ', ''))}",
+        f"Starts with: {hint_name[:1].upper() if hint_name else '?'}",
+    ]
+    hints_html = "".join(f"<li>{html.escape(line)}</li>" for line in hint_lines)
+    status_html = (
+        '<div class="mystery-answer">Reveal complete. Nice catch.</div>'
+        if is_revealed
+        else '<div class="mystery-answer">Guess it before you reveal it.</div>'
+    )
+
+    st.markdown(
+        f"""
+        <div class="mystery-card">
+          <div class="mystery-title">Who's That Pokémon?</div>
+          <div class="mystery-layout">
+            <img class="mystery-sprite{silhouette_class}" src="{html.escape(sprite_url, quote=True)}" alt="Mystery Pokémon" />
+            <div>
+              <div class="mystery-name">{html.escape(heading)}</div>
+              <ul class="mystery-hints">{hints_html}</ul>
+              {status_html}
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    action_cols = st.columns(3)
+    with action_cols[0]:
+        if st.button("Reveal", key="mystery_reveal", use_container_width=True):
+            st.session_state["mystery_revealed"] = True
+            st.rerun()
+    with action_cols[1]:
+        if st.button("New Mystery", key="mystery_refresh", use_container_width=True):
+            _choose_mystery_pick(species_index)
+            st.rerun()
+    with action_cols[2]:
+        if st.button("Search It", key="mystery_search", use_container_width=True):
+            st.session_state["search_prefill"] = name
+            st.session_state["search_query_input"] = name
+            st.session_state["enter_submit"] = True
+            st.session_state["mystery_revealed"] = True
+            st.rerun()
 
 
 def render_section(section: Dict[str, object]) -> str:
@@ -1803,6 +1941,7 @@ def main() -> None:
                 on_view_stats=_handle_view_stats,
             )
         st.markdown('<div class="pod-divider"></div>', unsafe_allow_html=True)
+        render_whos_that_pokemon(species_index)
         with st.container():
             pending_lookup_id = st.session_state.get("pending_lookup_id")
             pending_lookup_trigger = False
